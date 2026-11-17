@@ -1,0 +1,12 @@
+title = "TheoCompass secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "The original API's SHA-256 provenance digest is not an API credential."
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(^|/)tests/fixtures/scoring-original\.json$''']
+regexTarget = "line"
+regexes = ['''^\s*"apiHash": "[a-f0-9]{64}",?\s*$''']

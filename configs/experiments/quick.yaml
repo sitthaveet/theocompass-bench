@@ -1,0 +1,11 @@
+mode: quick
+repetitions: 3
+models: [terra, hydrogen, sonnet, deepseek, qwen, grok]
+soul: SOUL.md
+shuffleOptions: true
+seed: 20261117
+timeoutMs: 180000
+maxOutputTokens: 8192
+maxAttempts: 3
+concurrencyPerProvider: 1
+maxRequests: 1620

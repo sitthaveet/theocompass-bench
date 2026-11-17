@@ -1,184 +1,200 @@
-# TheoCompass Data Architecture & Workflow 
+# TheoCompass Bench
 
-Welcome to the data management hub for TheoCompass. This architecture is powered by a hybrid **Cloudflare D1 Relational Database** and **Cloudflare KV Cache**, ensuring massive multi-dimensional theological calculations run instantly at the edge.
+[![CI](https://github.com/sitthaveet/theocompass-bench/actions/workflows/ci.yml/badge.svg)](https://github.com/sitthaveet/theocompass-bench/actions/workflows/ci.yml)
+![Node.js 24+](https://img.shields.io/badge/Node.js-24%2B-339933?logo=nodedotjs&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)
+![Questionnaire](https://img.shields.io/badge/Quick_mode-30_questions-6654A3)
 
-**👋 Are you a developer contributing to the project?**
-Start by reading our [Developer Architecture Guide](./docs/DEVELOPER_GUIDE.md) to understand the tech stack, data flow, and current state of the backend. Then, read the [Methodology Guide](./docs/METHODOLOGY_GUIDE.md) to understand the 14-axis scoring algorithm that powers the quiz results. For a high-level summary of the whole quiz (developer view + quiz-taker view), see the [Quiz Overview](./docs/QUIZ_OVERVIEW.md).
+A local CLI for comparing the theological positions expressed by AI models under the same [SOUL.md](SOUL.md) instructions. It reuses [TheoCompass](https://github.com/TheoCompass/theocompass)'s original questionnaire, denomination baselines, and scoring behavior.
 
-This document outlines the streamlined, 4-step workflow to push theological data updates from your raw CSV spreadsheets directly to the live production database.
+The default pilot is **6 models × 30 questions × 3 repetitions = 540 scheduled answers**. Each question starts a fresh conversation, requests exactly one option plus certainty/tolerance and a short rationale, and preserves provider-default sampling and reasoning. Explicit silence and refusal are separate outcomes.
 
----
+[Quick start](#quick-start) · [Configuration](#configuration) · [Results](#results) · [Methodology](docs/methodology.md) · [Contributing](CONTRIBUTING.md) · [Publication checklist](docs/publishing.md)
 
-## The 4-Step Update Workflow
+**Current scope:** Quick mode is complete. Standard and Deep are rejected before API calls because their source exports are incomplete. Results describe expressed positions under this protocol, not personal beliefs or proof that bias has been removed.
 
-Whenever you make theological tweaks, correct typos, or add new denominations to the master CSVs, follow this exact workflow to push those changes live.
+## Quick start
 
-### Step 1: Update the Raw CSVs (Source of Truth)
-Edit your master Google Sheets and export/overwrite the CSV files in the `/data` folder. 
-
-**Required Files:**
-- `TheoCompass (v2.0) - QUESTION_MASTER.csv`
-- `TheoCompass (v2.0) - Hidden Dimensions.csv`
-- `TheoCompass (v2.0) - Unified Answer Scoring Matrix.csv`
-- `TheoCompass (v2.0) - Denominations & Doctrines_EXPORT.tsv`
-- `TheoCompass (v2.0) - QUIZ_SEQUENCE.csv`
-- `TheoCompass (v2.0) - FAMILIES.csv`
-
-### Step 2: Run the Math Precompute Engine
-Because the multi-dimensional alignment math is too complex for real-time SQL generation and requires strict Euclidean distance mapping, we run a Node.js script to calculate the baselines and format the JSON objects.
+Requires **Node.js 24 or later**, npm, and API access to the models you select. If you use nvm, `nvm install` reads [.nvmrc](.nvmrc). Run commands from the repository root:
 
 ```bash
-node scripts/build_precomputed.js
-```
-**What this does:** 
-- Reads the raw CSVs.
-- Calculates theological distances (accounting for certainty/tolerance/silence mechanics).
-- Outputs the results into the `/precomputed` folder (importantly, `denomination_profiles.json` and `denomination_mode_summary.csv`).
+git clone https://github.com/sitthaveet/theocompass-bench.git
+cd theocompass-bench
+npm ci
 
-### Step 3: Generate the SQL Seed File
-Next, we convert the raw CSVs and the precomputed math into a massive list of relational database commands.
+# Run once, only if .env does not already exist
+cp .env.example .env
+```
+
+Edit `.env` and fill in the keys for your selected models. The default experiment selects all six. The CLI loads `.env`; existing process environment variables take precedence. Keep `.env` local: it is git-ignored, and [.env.example](.env.example) contains empty key placeholders. Keys are attached only when sending HTTP requests and are not saved in request headers or manifests.
 
 ```bash
-python scripts/generate_sql_seed.py
-```
-**What this does:**
-- Drops existing tables to prevent schema mismatch errors.
-- Rebuilds the tables, parsing formatting and handling split answers (`denomination_selected_options`).
-- Generates a massive `seed.sql` file that drops **directly into the `theocompass-api` folder**.
-
-### Step 4: Push the Update Live!
-Finally, you execute the generated SQL file against your Cloudflare D1 database and upload the JSON profiles to the KV Cache.
-
-**For Local Testing:**
-```bash
-cd theocompass-api
-npx wrangler d1 execute theocompass-db --local --file=./seed.sql
-npm run kv:update-local
+npm run data:prepare                 # Local dataset validation
+npm run bench -- run --dry-run       # Budget/configuration check; no API calls
+npm run bench -- run --smoke         # One question per selected model
+npm run bench -- run                 # Full pilot and reports
 ```
 
-**For Production (Live Website):**
-```bash
-cd theocompass-api
-npx wrangler d1 execute theocompass-db --remote --file=./seed.sql
-npm run kv:update-remote
-```
+**Smoke tests and full runs can incur provider charges.** Start with the dry run, inspect its request ceiling, and confirm model access with a smoke test. The CLI prints the run directory; open `results/<run-id>/report.md` for the report. Smoke tests check connectivity and response format and do not generate alignment scores.
 
-🎉 **Boom. Your frontend API instantly reflects the new theological data. No frontend redeploy required.**
-
-### Step 5 (occasional): The Roadmap
-
-`data/roadmap.csv` is the roadmap's source of truth — one line per row of the original
-sheet, same six columns (ID, Task Name, Description, Type, My Role, Progress). Edit it
-directly, then rebuild:
+Offline tests and dry runs work without API keys:
 
 ```bash
-python3 scripts/build_roadmap_json.py      # csv   -> data/roadmap.json
-python3 scripts/generate_roadmap_seed.py   # json  -> theocompass-api/roadmap_seed.sql
-cd theocompass-api && npm run db:seed-roadmap-local   # or -remote
+npm run check
 ```
 
-`data/TheoCompass Roadmap.xlsx` is provenance, not a step. Only when the spreadsheet
-itself has changed do you re-export it:
+## Configuration
+
+Models and endpoints live in [configs/models.yaml](configs/models.yaml). The shipped entries are configuration defaults, not a guarantee that each model is available to your account. Update IDs/endpoints deliberately; unavailable models are reported without substitution.
+
+| Experiment ID | Provider | Configured API model ID | Environment variable |
+|---|---|---|---|
+| `terra` | OpenAI | `gpt-6.1-terra` | `OPENAI_API_KEY` |
+| `hydrogen` | Google | `gemini-4-hydrogen` | `GEMINI_API_KEY` |
+| `sonnet` | Anthropic | `claude-sonnet-5-5` | `CLAUDE_API_KEY` |
+| `deepseek` | DeepSeek | `deepseek-flash` | `DEEPSEEK_API_KEY` |
+| `qwen` | Qwen | `qwen3.8-flash` | `QWEN_API_KEY` |
+| `grok` | xAI | `grok-4.7` | `GROK_API_KEY` |
+
+Qwen defaults to Singapore; set `QWEN_BASE_URL` to your workspace's OpenAI-compatible base URL if needed. The API key must belong to the endpoint's region. No endpoint-region fallback occurs.
+
+### Run a smaller experiment
+
+Copy the default configuration:
 
 ```bash
-python3 scripts/export_roadmap_csv.py      # xlsx -> data/roadmap.csv (overwrites)
+cp configs/experiments/quick.yaml configs/experiments/my-run.yaml
 ```
 
-The generated upsert never writes a task's `status`, so statuses changed on `/roadmap`
-survive a content re-sync; pass `--reset-status` to the generator only when you want the
-sheet's statuses to win again. Details in `docs/DEVELOPER_GUIDE.md` §9.
+Edit these fields in the copy, leaving its other fields intact:
 
-**New tables need migrations first.** `roadmap_phases`, `roadmap_tasks` and the extra
-`quiz_events` columns arrive through `npm run db:migrate-local` / `npm run db:migrate-remote`;
-`data:sync-local` / `data:sync-remote` run the migrations, the reference seed and the roadmap
-seed in one go.
+```yaml
+models: [terra, sonnet]
+repetitions: 1
+maxRequests: 180
+```
 
----
+This schedules **2 models × 30 questions × 1 repetition = 60 answers**, allowing up to 180 requests with three attempts. Only the two selected providers need keys.
 
-## Folder Architecture
-
-- **`/docs`**: Contains developer onboarding and architecture documentation.
-- **`/data`**: Contains the raw, source-of-truth CSV files.
-- **`/scripts`**: Contains the Node.js and Python ETL pipeline scripts.
-- **`/precomputed`**: Temporary cache folder generated by Step 2. **Git-ignored** — regenerate with `node scripts/build_precomputed.js`; never commit it.
-- **`/theocompass-api`**: The Cloudflare Worker codebase. This serves endpoints like `/api/calculate` and `/api/dev/profile` directly to the Next.js frontend by querying D1 and KV.
-
----
-
-## Git Workflow
-
-The local folder `D:\TheoCompass\theocompass-web` **is** the git repository, linked directly to [GitHub](https://github.com/TheoCompass/theocompass). There is no manual copy / OneDrive step any more — edit locally, test, commit, push.
-
-**Branches**
-- `main` is the trunk and is what Cloudflare deploys. Keep it working.
-- Do work on short-lived branches (`feat/…`, `fix/…`, `chore/…`), merge into `main`, then delete them.
-- Milestones live as tags, not branches: `beta-launch`, `archive/pre-monorepo-scaffold`.
-
-**Daily loop**
 ```bash
-git switch -c feat/my-thing
-# edit files / run `npm run dev` / test
-git add -A && git commit -m "feat: my thing"
-git switch main && git merge --no-ff feat/my-thing && git push
-git branch -d feat/my-thing
+npm run bench -- run --config configs/experiments/my-run.yaml --dry-run
+npm run bench -- run --config configs/experiments/my-run.yaml --smoke
+npm run bench -- run --config configs/experiments/my-run.yaml
 ```
 
-**Undo**
-- `git reset --hard HEAD` — discard everything since the last commit.
-- `git checkout -- <file>` — revert a single file.
-- `git revert <sha>` — undo an already-pushed commit.
-- `git reflog` — recover "lost" commits.
+Use `--models PATH` to select a separate model configuration. Custom experiment files are regular repository files; keep credentials out of them. Set `maxUSD` only after adding dated `pricing` for every selected model. Token and dollar costs are estimates; the repository does not set a default dollar cap.
 
-**Never committed (regenerable — see `.gitignore`)**
-- `precomputed/` — rebuilt by `node scripts/build_precomputed.js` (Step 2).
-- `theocompass-api/seed.sql` — rebuilt by `python scripts/generate_sql_seed.py` (Step 3).
-- `theocompass-api/roadmap_seed.sql` — rebuilt by `python scripts/generate_roadmap_seed.py` (Step 5).
-- `node_modules/`, `.next/`, `.wrangler/`, `.env*`, `.dev.vars*` — local only.
+## Commands
 
----
+```bash
+# Compile the unchanged source data and inspect available modes
+npm run bench -- prepare
 
-## Frontend Deployment (Cloudflare Pages)
+# Validate locally and print the request budget and a cost estimate; nothing is sent
+npm run bench -- run --dry-run
 
-The frontend deploys to Cloudflare Pages with the `@cloudflare/next-on-pages` adapter.
+# One question per model; connectivity/format checks, with no alignment scores
+npm run bench -- run --smoke
 
-**Cloudflare Pages project settings (already configured in the dashboard):**
-- **Root directory:** `frontend`
-- **Build command:** `NEXT_PUBLIC_API_URL=https://theocompass-api.theocompass-project.workers.dev npx @cloudflare/next-on-pages@1`
-- **Build output directory:** `.vercel/output/static`
+# Collect the full 540-answer pilot, then generate scores and reports
+npm run bench -- run
 
-**Why `frontend/.npmrc` exists:** `npx @cloudflare/next-on-pages@1` re-resolves dependencies on every build and pulls the latest `wrangler`, which now requires `@cloudflare/workers-types@^5`, while `next-on-pages` requires `^4`. That mismatch aborts the build with `ERESOLVE`. `frontend/.npmrc` sets `legacy-peer-deps=true` so the build proceeds.
+# Continue unfinished tasks with the same request code/config/prompts/data
+npm run bench -- resume results/<run-id>
 
-> `@cloudflare/next-on-pages` is deprecated. When you're ready to modernize, either migrate to the OpenNext adapter (`@opennextjs/cloudflare`) or — since this app is fully static — switch to a plain `output: "export"` static deploy (build command `npm run build`, output directory `out`).
+# Regenerate deterministic scores or the full report from saved artifacts
+npm run bench -- score results/<run-id>
+npm run bench -- report results/<run-id>
 
-No frontend redeploy is needed when only the D1/KV data changes — only when the `frontend/` code changes.
+npm run typecheck
+npm test
+```
 
----
+`run` accepts `--config PATH` and `--models PATH`. The default experiment is [configs/experiments/quick.yaml](configs/experiments/quick.yaml). Option order is shuffled by default (seeded, with the same permutation for every model in a given repetition) because the source lists options from conservative to liberal; options are shown as A, B, C… so source IDs cannot reveal the original order. For an order-sensitivity experiment, copy the configuration and set `shuffleOptions: false`. Keep fixed and shuffled runs separate.
 
-## Dev Tools & Shortcuts 
+The default limits are one concurrent request per provider, 180 seconds per request, 8,192 output tokens, and three attempts for transient failures. The pilot request ceiling is 1,620; a smoke test allows at most 18 requests. Attempts also count against the saved request ceiling after a restart. A timeout can be billed even if its outcome is unknown.
 
-During development or testing, you might want to skip the 30-120 question quiz and generate results immediately. The developer tool modal is hidden in the UI to keep it clean for users. 
+HTTP 408, 429, and 5xx responses and transport failures may be retried, honoring `Retry-After`. Malformed answers, refusals, and truncations are terminal and never reprompted. HTTP 400/401/403/404 stops further work for that model during the invocation; other models continue. Resume continues pending work and preserves terminal outcomes. Start a new run to replace terminal failures or change experimental settings.
 
-**How to Unlock Dev Mode:** 
-1. Navigate to the Quiz page (`/christian-denominations`). 
-2. Click the **"Restart"** button located in the top-right header. 
-3. In the confirmation modal, type the secret code: **`mod`**. 
-4. A **"🚀 Unlock Dev Tools"** button will appear. 
-5. Click it to open a menu where you can instantly generate random answers, or dynamically pull a specific denomination's perfect answers (e.g., `DENOM_032`) directly from the D1 database to test the 100% match accuracy.
+### Keeping cost down
 
-*Note: This feature is intended for testing purposes only.*
+- **Reuse saved replies.** A run first looks through earlier runs in `results/` for a completed reply (HTTP 2xx) to a byte-identical request with the same repetition number, and copies it instead of sending. Copied replies are re-decoded and re-parsed with current code, marked `reusedFrom` in `responses.jsonl`, and cost nothing in that run's `usage.json`. Failed requests are never reused. Pass `--fresh` to `run` or `resume` to disable cross-run reuse; resume still preserves its own terminal outcomes.
+- **Resume survives report changes.** The resume fingerprint covers only code that shapes requests or turns replies into outcomes. Editing `src/analysis/` or `src/cli.ts` does not block a resume. The scorer has its own hash: after a scoring change, start a new run; it reuses every reply, so rescoring costs nothing.
+- **Prompt caching.** SOUL.md and the fixed protocol instructions come before the question on every request, allowing eligible prefixes to be cached. The Claude adapter sets an explicit breakpoint after the instructions. Cache eligibility and returned usage depend on the provider.
+- **Dollar budget.** Set `maxUSD` in the experiment file to stop starting new requests once known spend reaches it. It requires `pricing` for every model. Requests already in flight can overshoot by about one per provider. Prices and `maxUSD` are not part of the fingerprint: raise the budget or correct a price, then `resume`.
 
----
+Exit codes: `0` for success, `1` for command/configuration errors, `2` for a run with unusable or pending outcomes. Smoke tests may succeed without producing any theological scores.
+
+## Results
+
+Every run is stored locally under the git-ignored `results/<run-id>/`:
+
+| Artifact | Contents |
+|---|---|
+| `manifest.json` | Resolved model/configuration, budgets, versions, content hashes, code/dependency fingerprint, timestamps |
+| `dataset.json`, `SOUL.md` | Exact dataset and system-prompt snapshots |
+| `responses.jsonl` | Append-only, synced start/finish records; sanitized requests, raw responses, errors, metadata, usage |
+| `answers.jsonl` | Derived terminal model outcomes and normalized answers |
+| `scores.json` | Full rankings and 14 axes for each complete repetition, plus aggregates |
+| `report.md` | Coverage, response profile with silence warnings, side-by-side axis comparison, rankings, variation, usage, and provenance |
+| `rankings.csv`, `axes.csv` | Aggregate scores and sample standard deviations |
+| `coverage.csv`, `answer-frequencies.csv` | Every repetition's coverage and per-item choices/failures with explicit denominators |
+| `response-profile.csv` | Per-model answered/silence/refusal/failure shares and cross-repetition stability |
+| `usage.json` | Per-model and total tokens (input, cached, cache-write, output, reasoning), requests sent, answers reused, and cost in USD for priced models; the same table is in `report.md` under "Cost and tokens" |
+
+Only complete pilot repetitions are scored. An explicit apathetic/hostile silence is a valid scored response under the original quiz. A refusal, missing answer, invalid response, truncation, or transport error makes that repetition unscorable. No failure is converted into a neutral theological position.
+
+Reports give descriptive variation across complete repetitions, not confidence intervals. Native axis values stay on their original 0–100 scales; see [docs/methodology.md](docs/methodology.md) for pole direction and scoring limitations. Cost appears only for models with dated `pricing` in [configs/models.yaml](configs/models.yaml), using cache rates where configured. Costs are estimates from returned usage, not invoice totals.
+
+Run artifacts include raw provider responses and request metadata. Keep them local unless reviewed for sensitive information; see [SECURITY.md](SECURITY.md) before sharing.
 
 ## Troubleshooting
 
-**"Cannot find module 'csv-parse'" when running Node script?**
-Run `npm install csv-parse` in the root folder.
+| Problem | What to check |
+|---|---|
+| Missing API key | Fill the selected model's variable in `.env`, or export it in your shell. |
+| HTTP 400/401/403/404 | Check model ID, account access, endpoint, and key region. Other models continue. |
+| Invalid response, refusal, or truncation | Inspect the local run artifacts. These outcomes are terminal and are not silently reprompted. |
+| Cannot resume after an edit | Restore the original request code/configuration/prompts/data, or start a new run to reuse matching saved replies. |
+| Incomplete Standard/Deep mode | Use Quick; the missing source options/dimensions must be supplied before those modes can run. |
+| Dollar budget reached | Raise `maxUSD` and resume, or keep the partial run. In-flight requests can overshoot the cap. |
 
-**"table questions has no column named X: SQLITE_ERROR"**
-This happens if you altered the database schema but your local database still has the old table. Ensure your Python script includes `DROP TABLE IF EXISTS` commands before the `CREATE TABLE` commands.
+## Development and publication
 
-**The site says "TheoCompass is paused for today" (HTTP 503 with `D1_LIMIT_REACHED`)?**
-The Workers Free plan's daily D1 row allowance is used up. Nothing is broken and no data was lost: the API answers 503 until 00:00 UTC, and the message shows the exact reset time in your own timezone. Reads (questions, results, roadmap) stop first; a failed quiz-completion stat or issue report is the same allowance running out on the write side. Either wait for the reset or upgrade the D1 plan.
+```bash
+npm ci
+npm run check                       # Publication file guard, TypeScript, offline tests
+npm run data:prepare
+npm run bench -- run --dry-run
+npm audit --audit-level=moderate
+```
 
-**Worker throwing 0xc0000005 access violations locally?**
-This is a known Windows bug with Cloudflare Wrangler. Bypass local testing by deploying to a dev environment: `npx wrangler deploy` and testing the live `.workers.dev` URL.
+[GitHub Actions](.github/workflows/ci.yml) runs these checks without model credentials, plus Gitleaks scans of history and the publication snapshot. Dependabot checks npm dependencies and pinned Actions weekly. Local file checks complement secret scanning; they cannot prove that no sensitive information exists.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for compatibility requirements, [SECURITY.md](SECURITY.md) for credential handling, and the [publication checklist](docs/publishing.md) for release steps and repository settings.
+
+## Project layout
+
+```text
+configs/              Models, endpoints, and experiments
+data/source/          Original questionnaire/scoring exports, unchanged
+data/compiled/        Regenerable, git-ignored normalized dataset
+src/dataset/          Parsing, validation, versioning, baseline compilation
+src/scoring/          Pure, versioned extraction of the original API scoring
+src/prompts/          Shared elicitation protocol and answer validation
+src/providers/        Native HTTP adapters for six providers
+src/runner/           Checkpoints, request budgets, locks, and resume
+src/analysis/         Scoring, aggregation, Markdown and CSV reports
+tests/                Offline tests and independent original-handler fixtures
+reference/theocompass/ Original scoring oracle and upstream documentation
+```
+
+Only Quick mode is currently complete. Standard and Deep are rejected before calls because their source exports lack required answers and dimensions. The reference directory retains the unchanged original scorer and baseline compiler for independent parity tests. The unused web app, deployment setup, roadmap assets, and build scripts have been removed; see [reference/theocompass/README.md](reference/theocompass/README.md).
+
+Read [docs/methodology.md](docs/methodology.md) and [docs/dataset-provenance.md](docs/dataset-provenance.md) before interpreting results. Alignment with TheoCompass's framework does not establish that an AI has personal beliefs or that its responses are free of bias.
+
+## Attribution and licensing
+
+Questionnaires, denomination baselines, and scoring behavior come from [TheoCompass/theocompass](https://github.com/TheoCompass/theocompass). The original scoring code and documentation are retained for provenance and independent compatibility checks; this benchmark is a separate project.
+
+Original benchmark contributions are licensed under the [MIT License](LICENSE). Upstream code, data, documentation, and upstream portions of adaptations are excluded from that grant. No upstream license was found; this fork does not grant permission to redistribute or relicense that material. See [NOTICE.md](NOTICE.md) for scope and provenance.

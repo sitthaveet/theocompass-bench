@@ -1,0 +1,38 @@
+# Optional per-model `pricing` (USD per million tokens, dated) turns token counts into cost in each
+# run's usage.json and report.md, and is required by every model when an experiment sets maxUSD.
+# Fill in each provider's current list price, e.g.:
+#   pricing: { asOf: YYYY-MM-DD, inputPerMillion: 0, outputPerMillion: 0, cachedInputPerMillion: 0 }
+models:
+  - id: terra
+    provider: openai
+    model: gpt-6.1-terra
+    apiKeyEnv: OPENAI_API_KEY
+    baseUrl: https://api.openai.com/v1
+  - id: hydrogen
+    provider: gemini
+    model: gemini-4-hydrogen
+    apiKeyEnv: GEMINI_API_KEY
+    baseUrl: https://generativelanguage.googleapis.com/v1beta
+  - id: sonnet
+    provider: anthropic
+    model: claude-sonnet-5-5
+    apiKeyEnv: CLAUDE_API_KEY
+    baseUrl: https://api.anthropic.com/v1
+    # Anthropic list prices, USD per million tokens. Cache writes use the 5-minute TTL rate (1.25x input).
+    pricing: { asOf: 2026-11-03, inputPerMillion: 2, outputPerMillion: 10, cachedInputPerMillion: 0.1, cacheWritePerMillion: 2.5 }
+  - id: deepseek
+    provider: deepseek
+    model: deepseek-flash
+    apiKeyEnv: DEEPSEEK_API_KEY
+    baseUrl: https://api.deepseek.com
+  - id: qwen
+    provider: qwen
+    model: qwen3.8-flash
+    apiKeyEnv: QWEN_API_KEY
+    baseUrl: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+    baseUrlEnv: QWEN_BASE_URL
+  - id: grok
+    provider: grok
+    model: grok-4.7
+    apiKeyEnv: GROK_API_KEY
+    baseUrl: https://api.x.ai/v1
